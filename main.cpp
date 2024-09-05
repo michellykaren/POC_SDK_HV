@@ -3,8 +3,19 @@
 #include <iostream>
 #include <fstream>
 #include <thread>
-#include <chrono>
 #include <cstring>
+
+// definir para ativar o teste de captura com N iterações
+#define TESTE_TEMPO_CAPTURA  // comentar para executar o código normalmente
+#ifdef TESTE_TEMPO_CAPTURA
+    #define NUM_ITERACOES 100
+
+    #include <chrono>
+    #include <vector>
+    #include <algorithm>
+    #include <numeric>
+
+#endif
 
 // inicializar o SDK
 bool initSDK() {
@@ -37,7 +48,7 @@ LONG loginToCamera(const char* ip, WORD port, const char* username, const char* 
     if (userID < 0) {
         std::cerr << "Erro ao fazer login: " << NET_DVR_GetLastError() << std::endl;
     } else {
-        std::cout << "Login bem-sucedido! ID do usuário: " << userID << std::endl;
+        std::cout << "Login bem-sucedido! ID do usuário: " << userID << " IP da câmera: " << ip << std::endl;
     }
     return userID;
 }
@@ -148,34 +159,85 @@ bool salvarStreamEmArquivo(LONG playHandle, char* filePath) {
     return true;
 }
 
+#ifdef TESTE_TEMPO_CAPTURA
+// Função para calcular FPS com base nos tempos de captura
+void calculate_fps(const std::vector<double>& capture_times) {
+    double min_fps = 1000.0 / *std::max_element(capture_times.begin(), capture_times.end());
+    double max_fps = 1000.0 / *std::min_element(capture_times.begin(), capture_times.end());
+    double avg_fps = 1000.0 / (std::accumulate(capture_times.begin(), capture_times.end(), 0.0) / capture_times.size());
+
+    std::cout << "Taxa de FPS máxima: " << max_fps << " FPS\n";
+    std::cout << "Taxa de FPS mínima: " << min_fps << " FPS\n";
+    std::cout << "Taxa de FPS média: " << avg_fps << " FPS\n\n";
+}
+
+void calculate_response_times(const std::vector<double>& capture_times) {
+    double min_time = *std::min_element(capture_times.begin(), capture_times.end());
+    double max_time = *std::max_element(capture_times.begin(), capture_times.end());
+    double avg_time = std::accumulate(capture_times.begin(), capture_times.end(), 0.0) / capture_times.size();
+
+    std::cout << "Tempo de resposta mínimo: " << min_time << " ms\n";
+    std::cout << "Tempo de resposta máximo: " << max_time << " ms\n";
+    std::cout << "Tempo de resposta médio: " << avg_time << " ms\n\n";
+}
+
+#endif
+
+// Função para capturar imagem com o tempo de execução medido
 bool captureImage_V50(LONG userID, const char* filePath) {
     NET_DVR_PICPARAM_V50 picParams = {0};
-    
+
     // Configurando os parâmetros JPEG
     picParams.struParam.wPicSize = 0xff;        // Resolução máxima
     picParams.struParam.wPicQuality = 2;        // Qualidade normal
- 
+
     // Configurações adicionais
     picParams.byPicFormat = 0;                  // JPEG
     picParams.byCapturePicType = 0;             // Captura geral
     picParams.bySceneID = 0;                    // ID da cena (0 se não suportado)
- 
+
     // Buffer para armazenar a imagem capturada
     const DWORD bufferSize = 10 * 1024 * 1024;  // Buffer de 10 MB (ajuste conforme necessário)
     char* buffer = new char[bufferSize];
     DWORD sizeReturned = 0;
- 
-    std::cout << "Tentando capturar imagem (V50)..." << "\n" << std::endl;
- 
-    // Captura a imagem da câmera e salva no buffer
-    if (!NET_DVR_CapturePicture_V50(userID, 1, &picParams, buffer, bufferSize, &sizeReturned)) {
-        std::cerr << "Erro ao capturar a imagem (V50): " << NET_DVR_GetLastError() << "\n" << std::endl;
-        delete[] buffer;                        // Libera o buffer alocado
-        return false;
-    }
- 
+
+    std::cout << "Tentando capturar imagem com NET_DVR_CapturePicture_V50()..." << "\n" << std::endl;
+
+    #ifdef TESTE_TEMPO_CAPTURA
+        std::vector<double> capture_times;
+
+        for (int i = 0; i < NUM_ITERACOES; ++i) {
+            auto start = std::chrono::high_resolution_clock::now();
+
+            // Captura a imagem da câmera e salva no buffer
+            if (!NET_DVR_CapturePicture_V50(userID, 1, &picParams, buffer, bufferSize, &sizeReturned)) {
+                std::cerr << "Erro ao capturar a imagem (V50): " << NET_DVR_GetLastError() << "\n" << std::endl;
+                delete[] buffer;
+                return false;
+            }
+
+            auto end = std::chrono::high_resolution_clock::now();
+            auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+            
+            // Guardar o tempo de captura
+            capture_times.push_back(static_cast<double>(duration));
+        }
+
+        // Calcular e exibir o FPS
+        calculate_fps(capture_times);
+        calculate_response_times(capture_times);
+
+    #else
+        // Captura a imagem da câmera e salva no buffer
+        if (!NET_DVR_CapturePicture_V50(userID, 1, &picParams, buffer, bufferSize, &sizeReturned)) {
+            std::cerr << "Erro ao capturar a imagem (V50): " << NET_DVR_GetLastError() << "\n" << std::endl;
+            delete[] buffer;
+            return false;
+        }
+    #endif
+
     std::cout << "Imagem capturada com sucesso! Tamanho da imagem: " << sizeReturned << " bytes." << std::endl;
- 
+
     // Salva o buffer em um arquivo
     std::ofstream outputFile(filePath, std::ios::binary);
     if (outputFile) {
@@ -184,17 +246,18 @@ bool captureImage_V50(LONG userID, const char* filePath) {
         std::cout << "Imagem salva em: " << filePath << std::endl;
     } else {
         std::cerr << "Erro ao salvar a imagem no arquivo." << std::endl;
-        delete[] buffer;        // Libera o buffer alocado
+        delete[] buffer;
         return false;
     }
- 
-    delete[] buffer;            // Libera o buffer alocado
+
+    delete[] buffer;
     return true;
 }
+
  
 int main() {
     // Variáveis para IP, porta, login e senha
-    const char* ip = "";
+    const char* ip = ""; // 44 46 64
     WORD port = 8000;
     const char* username = "";
     const char* password = "";
@@ -205,26 +268,27 @@ int main() {
     LONG userID = loginToCamera(ip, port, username, password);
 
     if (userID >= 0) {
-        captureImage_V50(userID, "img/captured_image_v50.jpg");
-
+        captureImage_V50(userID, "media/captured_image_v50.jpg");
+        /*
         LONG nPort = -1;
         LONG playHandle = startVideoStream(userID, nPort);
 
         if (playHandle >= 0) {
             
-            /* 1 get PlayM4GetJPG */
+            // 1 get PlayM4GetJPG 
             //captureJPEG(nPort, "img/captured_image_playm4.jpg");
             //PlayM4_Stop(nPort);
             //PlayM4_CloseStream(nPort);
 
-            /* 2 get videostream */
+            // 2 get videostream 
             //salvarStreamEmArquivo(playHandle, (char*)"video_output.mp4");
             //NET_DVR_StopRealPlay(playHandle);
         }
-
+        */
         NET_DVR_Logout(userID);
     }
 
     NET_DVR_Cleanup();
     return 0;
 }
+
